@@ -1,0 +1,247 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import xgboost as xgb
+import pandas as pd
+import os
+import numpy as np
+from tensorflow.keras.models import load_model
+
+class RCBeamPredictor:
+    def __init__(self, master):
+        self.master = master
+        master.title("RC Beam Bending Capacity Predictor (XGB-MLP Hybrid Model)")
+        master.geometry("720x650")
+
+        # Explicit feature order definition
+        self.feature_order = [
+            'fire_exposure_time',
+            'corrosion_rate',
+            'b',
+            'h',
+            'c',
+            'fc',
+            'fy',
+            'As',
+            'cooling method_1',
+            'cooling method_2',
+            'cooling method_3'
+        ]
+
+        # Load hybrid model components
+        try:
+            # Load XGBoost model
+            xgb_model_path = r'(Need user-defined file path)' # The XGBoost model must be saved in json format
+            if not os.path.exists(xgb_model_path):
+                raise FileNotFoundError(f"XGBoost model file not found: {xgb_model_path}")
+                
+            self.xgb_model = xgb.Booster()
+            self.xgb_model.load_model(xgb_model_path)
+            
+            # Load MLP model
+            mlp_model_path = r'Need user-defined file path' # The MLP model must be saved in h5 format
+            if not os.path.exists(mlp_model_path):
+                raise FileNotFoundError(f"MLP model file not found: {mlp_model_path}")
+                
+            self.mlp_model = load_model(mlp_model_path)
+
+            # Verify feature names compatibility
+            if not hasattr(self.xgb_model, 'feature_names') or self.xgb_model.feature_names is None:
+                print("Warning: Model missing feature names, using predefined order")
+                self.xgb_model.feature_names = self.feature_order
+            elif list(self.xgb_model.feature_names) != self.feature_order:
+                messagebox.showerror("Error", 
+                                    f"Feature order mismatch\nModel features: {self.xgb_model.feature_names}\nRequired order: {self.feature_order}")
+
+        except Exception as e:
+            messagebox.showerror("Model Loading Error", f"Failed to load models: {str(e)}")
+            exit()
+
+        # Create GUI components
+        self.create_widgets()
+
+    def create_widgets(self):
+        """Create and arrange all GUI components"""
+        main_frame = ttk.Frame(self.master)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        # Input parameters panel
+        input_frame = ttk.LabelFrame(main_frame, text="Input Parameters")
+        input_frame.grid(row=0, column=0, padx=10, pady=10, sticky=tk.NSEW)
+
+        # Cooling method selection (placed last)
+        ttk.Label(input_frame, text="Cooling Method:").grid(row=8, column=0, sticky=tk.W)
+        self.cooling_var = tk.StringVar()
+        self.cooling_cb = ttk.Combobox(input_frame, textvariable=self.cooling_var,
+                                      values=["Natural Cooling", "No Fire", "Water Cooling"])
+        self.cooling_cb.grid(row=8, column=1, padx=5, pady=5)
+        self.cooling_cb.current(0)  # Set default value
+
+        # Numerical input parameters (in dataset order)
+        params = [
+            ("Fire Exposure Time (min):", "fire_exposure_time"),
+            ("Corrosion Rate (0-1):", "corrosion_rate"),
+            ("Width b (mm):", "b"),
+            ("Effective Height h0 (mm):", "h0"),
+            ("Cover c (mm):", "c"),
+            ("Concrete fc (MPa):", "fc"),
+            ("Steel fy (MPa):", "fy"),
+            ("Steel Area As (mm²):", "As")
+        ]
+
+        self.entries = {}
+        for i, (label, name) in enumerate(params):
+            ttk.Label(input_frame, text=label).grid(row=i, column=0, sticky=tk.W)
+            self.entries[name] = ttk.Entry(input_frame)
+            self.entries[name].grid(row=i, column=1, padx=5, pady=2)
+
+        # Prediction button
+        ttk.Button(main_frame, text="Predict", command=self.predict).grid(row=1, column=0, pady=15)
+
+        # Result display
+        self.result_var = tk.StringVar()
+        result_label = ttk.Label(main_frame, textvariable=self.result_var,
+                                font=('Arial', 12, 'bold'), foreground="blue")
+        result_label.grid(row=2, column=0)
+
+        # Debug buttons
+        debug_frame = ttk.Frame(main_frame)
+        debug_frame.grid(row=3, column=0, pady=10)
+        ttk.Button(debug_frame, text="Show Features", command=self.show_features).pack(side=tk.LEFT)
+        ttk.Button(debug_frame, text="Load Test Case", command=self.load_test_data).pack(side=tk.LEFT, padx=10)
+
+    def load_test_data(self):
+        """Load test case data for quick demonstration"""
+        test_values = {
+            'fire_exposure_time': 90,
+            'corrosion_rate': 0.15,
+            'b': 300,
+            'h0': 500,
+            'c': 40,
+            'fc': 30,
+            'fy': 400,
+            'As': 508
+        }
+        for name, value in test_values.items():
+            self.entries[name].delete(0, tk.END)
+            self.entries[name].insert(0, str(value))
+        self.cooling_var.set("Natural Cooling")
+
+    def validate_inputs(self):
+        """Validate user inputs for correctness and range"""
+        try:
+            inputs = {
+                'fire_exposure_time': float(self.entries['fire_exposure_time'].get()),
+                'corrosion_rate': float(self.entries['corrosion_rate'].get()),
+                'b': float(self.entries['b'].get()),
+                'h0': float(self.entries['h0'].get()),
+                'c': float(self.entries['c'].get()),
+                'fc': float(self.entries['fc'].get()),
+                'fy': float(self.entries['fy'].get()),
+                'As': float(self.entries['As'].get())
+            }
+
+            # Validate value ranges
+            if not (0 <= inputs['corrosion_rate'] <= 1):
+                raise ValueError("Corrosion rate must be between 0 and 1")
+            if inputs['fire_exposure_time'] < 0:
+                raise ValueError("Fire exposure time cannot be negative")
+
+            return True, inputs
+        except ValueError as e:
+            messagebox.showerror("Input Error", str(e))
+            return False, None
+
+    def predict(self):
+        """Execute prediction using XGB-MLP hybrid model"""
+        # Validate inputs
+        valid, inputs = self.validate_inputs()
+        if not valid:
+            self.result_var.set("Prediction failed: Invalid inputs")
+            return
+
+        # Process cooling method encoding
+        cooling_mapping = {
+            "Natural Cooling": [1, 0, 0],  # cooling method_1
+            "No Fire": [0, 1, 0],          # cooling method_2
+            "Water Cooling": [0, 0, 1]     # cooling method_3
+        }
+        try:
+            cooling_values = cooling_mapping[self.cooling_var.get()]
+        except KeyError:
+            messagebox.showerror("Error", "Please select a valid cooling method")
+            return
+
+        # Build feature dictionary (strictly in training order)
+        features = {
+            'fire_exposure_time': inputs['fire_exposure_time'],
+            'corrosion_rate': inputs['corrosion_rate'],
+            'b': inputs['b'],
+            'h': inputs['h0'],  # Note: GUI uses 'h0' but model expects 'h'
+            'c': inputs['c'],
+            'fc': inputs['fc'],
+            'fy': inputs['fy'],
+            'As': inputs['As'],
+            'cooling method_1': cooling_values[0],
+            'cooling method_2': cooling_values[1],
+            'cooling method_3': cooling_values[2]
+        }
+
+        # Convert to DataFrame
+        try:
+            input_df = pd.DataFrame([features], columns=self.feature_order)
+        except KeyError as e:
+            messagebox.showerror("Feature Error", f"Missing feature column: {str(e)}")
+            return
+
+        # Execute hybrid model prediction
+        try:
+            # Stage 1: XGBoost prediction
+            dtest = xgb.DMatrix(input_df)
+            xgb_output = self.xgb_model.predict(dtest)
+            
+            # Stage 2: Prepare input for MLP (combine original features and XGB output)
+            hybrid_input = np.column_stack([input_df.values, xgb_output])
+            
+            # Stage 3: MLP prediction
+            mlp_output = self.mlp_model.predict(hybrid_input)
+            prediction = mlp_output[0][0]  # Assuming single output
+            
+            # Display result
+            self.result_var.set(f"Predicted flexural capacity: {prediction:.2f} kN·m")
+
+            # Sanity check
+            if prediction < 0:
+                messagebox.showwarning("Warning", "Negative prediction value - check input parameters")
+        except Exception as e:
+            messagebox.showerror("Prediction Error", f"Hybrid model failed: {str(e)}")
+
+    def show_features(self):
+        """Display current feature values for debugging"""
+        valid, inputs = self.validate_inputs()
+        if valid:
+            try:
+                cooling_values = cooling_mapping[self.cooling_var.get()]
+            except KeyError:
+                return
+            
+            features = {
+                'fire_exposure_time': inputs['fire_exposure_time'],
+                'corrosion_rate': inputs['corrosion_rate'],
+                'b': inputs['b'],
+                'h': inputs['h0'],  # Note conversion from h0 to h
+                'c': inputs['c'],
+                'fc': inputs['fc'],
+                'fy': inputs['fy'],
+                'As': inputs['As'],
+                'cooling method_1': cooling_values[0],
+                'cooling method_2': cooling_values[1],
+                'cooling method_3': cooling_values[2]
+            }
+            feature_info = "\n".join([f"{k}: {v}" for k, v in features.items()])
+            messagebox.showinfo("Current Feature Values", feature_info)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = RCBeamPredictor(root)
+    root.mainloop()
